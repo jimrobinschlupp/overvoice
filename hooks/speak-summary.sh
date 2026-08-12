@@ -43,7 +43,7 @@ TTS_OPENAI_MODEL=gpt-4o-mini-tts
 # themselves these voices perform — bright, presenterly, over-warm. What is
 # wanted is a colleague telling you something while you get on with your
 # morning. Audition changes with `voice tts`.
-TTS_OPENAI_STYLE="Speak like a calm, competent colleague giving a short status update to someone wearing headphones who is busy doing something else. Even and unhurried, at a natural conversational pace. Warm but matter-of-fact: not cheerful, not enthusiastic, no presenter or announcer energy, no dramatic emphasis. Let commas and full stops breathe. Ask any closing question plainly, as a real question, not with a theatrical rise."
+TTS_OPENAI_STYLE="Speak like a friend talking over their shoulder about something they just finished, half distracted and already onto the next thing. Relaxed and offhand, at an easy everyday pace, closer to thinking out loud than to reporting. Nothing here is an achievement: no pride, no sense of occasion, no weight or triumph on the opening word, no gravitas, no presenter or announcer energy, no dramatic emphasis, no rising finish. Let commas and full stops breathe. Ask any closing question lightly, the way you would ask someone if they want a coffee."
 # Your key. Kept in a file rather than the config so it is easy to lock down:
 #   printf '%s' 'sk-...' > ~/.claude/openai-key && chmod 600 ~/.claude/openai-key
 TTS_KEY_FILE="$HOME/.claude/openai-key"
