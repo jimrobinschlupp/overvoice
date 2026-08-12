@@ -43,6 +43,11 @@ network call is the summary, which goes through your own `claude` CLI.
   produced by `claude -p`, billed to your own plan
 - **[Wispr Flow](https://wisprflow.ai)**: optional but worth it; Apple's
   recogniser is fine for "yes" and mangles anything technical
+- **An OpenAI API key**: optional but strongly recommended. It runs out of the
+  box on Apple's built-in voices, but those are a generation behind modern
+  neural TTS and sound it, and this is a voice you listen to all day.
+  `TTS_ENGINE=openai` is a large step up; `TTS_CMD` points at a local engine
+  such as Kokoro or Piper instead
 - **Bluetooth earphones with a microphone**: this is what makes it work away
   from the screen
 
