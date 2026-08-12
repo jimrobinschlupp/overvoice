@@ -1,0 +1,8 @@
+# never commit runtime state: the logs contain speech transcripts
+*.log
+*.tsv
+voice.conf
+*.app/
+.DS_Store
+# built binary (build-all.sh output)
+swift/overvoice-play

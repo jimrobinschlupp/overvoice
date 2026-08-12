@@ -1,0 +1,367 @@
+#!/bin/bash
+# Control the Claude Code spoken-summary hook.
+#   voice              show current settings
+#   voice on           chime, spoken briefing, notification
+#   voice quiet        silent, but still notified
+#   voice off          nothing at all
+#   voice list         installed voices, best ones first
+#   voice audition     hear every good voice speak the same line
+#   voice set <name>   pick a voice, e.g.  voice set "Zoe (Premium)"
+#   voice rate <wpm>   speaking speed (default 185)
+#   voice sound <name> chime sound, e.g.  voice sound Submarine
+#   voice test         hear the current settings
+#   voice voices       open the macOS voice-download screen
+
+CONF="$HOME/.claude/voice.conf"
+OFF="$HOME/.claude/voice-off"
+HOOK="$HOME/.claude/hooks/speak-summary.sh"
+
+touch "$CONF" 2>/dev/null
+
+# Read a setting: the override file first, then the hook's own default.
+get() {
+  local v
+  v=$(grep -E "^$1=" "$CONF" 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/^"//;s/"$//')
+  [ -z "$v" ] && v=$(grep -E "^$1=" "$HOOK" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]]*#.*//;s/^"//;s/"$//' | xargs)
+  printf '%s' "$v"
+}
+
+# Write a setting, replacing any previous line for that key.
+set_key() {
+  local tmp; tmp=$(mktemp)
+  grep -vE "^$1=" "$CONF" 2>/dev/null > "$tmp"
+  printf '%s="%s"\n' "$1" "$2" >> "$tmp"
+  mv "$tmp" "$CONF"
+}
+
+case "$1" in
+  off)
+    touch "$OFF"; set_key NOTIFY_WHEN_OFF "0"
+    echo "Overvoice OFF: nothing at all, no sound and no notification." ;;
+
+  quiet|notify)
+    # The middle state. Worth having because turning off Claude Code's own
+    # notifications, which the README recommends to avoid getting two of
+    # everything, means a silenced Overvoice would otherwise leave no signal
+    # that a briefing happened at all.
+    touch "$OFF"; set_key NOTIFY_WHEN_OFF "1"
+    echo "Overvoice QUIET: silent, but still notified." ;;
+
+  on)
+    rm -f "$OFF"; set_key NOTIFY_WHEN_OFF "1"
+    ENG=$(get TTS_ENGINE); ENG="${ENG:-say}"
+    if [ "$ENG" = "openai" ]; then V="$(get TTS_OPENAI_VOICE) (OpenAI)"; else V=$(get VOICE); fi
+    echo "Voice ON — voice: $V" ;;
+
+  list)
+    echo "Premium / Enhanced installed (these are the good ones):"
+    say -v '?' | grep -iE 'premium|enhanced' | sed 's/^/  /' \
+      || echo "  none yet — run:  voice voices"
+    echo
+    echo "Standard English voices:"
+    say -v '?' | grep -E '^[A-Za-z ()]+ +en_' | grep -viE 'premium|enhanced' \
+      | awk '{print "  " $0}' | head -20 ;;
+
+  set)
+    [ -z "$2" ] && { echo "Usage: voice set \"Zoe (Premium)\""; exit 1; }
+    if ! say -v '?' | grep -qF "$2"; then
+      echo "Not installed: $2"
+      echo "Run 'voice list' to see what you have, or 'voice voices' to download more."
+      exit 1
+    fi
+    set_key VOICE "$2"
+    echo "Voice set to $2"
+    say -v "$2" -r "$(get RATE)" "Hello, this is $2. This is how I'll sound." ;;
+
+  rate)
+    case "$2" in ''|*[!0-9]*) echo "Usage: voice rate 185  (a number)"; exit 1 ;; esac
+    set_key RATE "$2"; echo "Rate set to $2 wpm"
+    say -v "$(get VOICE)" -r "$2" "This is how fast I'll speak from now on." ;;
+
+  sound)
+    [ -z "$2" ] && {
+      echo "Available:"; ls /System/Library/Sounds | sed 's/\.aiff$//' | sed 's/^/  /'; exit 1; }
+    [ -f "/System/Library/Sounds/$2.aiff" ] || { echo "No sound called $2"; exit 1; }
+    set_key CHIME "$2"; echo "Chime set to $2"
+    afplay -v "$(get CHIME_VOL)" "/System/Library/Sounds/$2.aiff" ;;
+
+  listen)
+    L="$HOME/Applications/Overvoice Listen.app"
+    V=$(mktemp)
+    pkill -f OvervoiceListen 2>/dev/null
+    : > "$HOME/.claude/menubar/listen.log"
+    echo "Listening for 9 seconds — say YES (or NO) after the chime."
+    open -n -g -a "$L" --args 9 "$V"
+    sleep 0.7
+    afplay -v "$(get CHIME_VOL)" "/System/Library/Sounds/$(get CHIME).aiff" 2>/dev/null
+    for i in $(seq 1 80); do [ -s "$V" ] && break; sleep 0.5; done
+    echo
+    echo "VERDICT: $(cat "$V" 2>/dev/null || echo none)"
+    echo "--- what it actually heard ---"
+    cat "$HOME/.claude/menubar/listen.log" 2>/dev/null | sed 's/^/  /'
+    rm -f "$V" ;;
+
+  detail)
+    case "$2" in
+      briefing) set_key DEPTH briefing
+        echo "Detail: briefing — the recap your agent ends its messages with."
+        echo "Falls back to full output on any turn that wrote none." ;;
+      full) set_key DEPTH full
+        echo "Detail: full — everything, unedited. Nothing summarised, nothing dropped." ;;
+      brief|normal|detailed) set_key DEPTH "$2"
+        case "$2" in
+          detailed) echo "Detail: detailed — about two thirds as long" ;;
+          normal)   echo "Detail: normal — about a third as long" ;;
+          brief)    echo "Detail: brief — about a tenth as long" ;;
+        esac ;;
+      *) echo "Usage: voice detail briefing|full|detailed|normal|brief"
+         echo "  briefing  the closing recap your agent wrote (default)"
+         echo "  full      everything, unedited"
+         echo "  detailed  about two thirds as long"
+         echo "  normal    about a third as long"
+         echo "  brief     about a tenth as long"
+         echo
+         echo "Every level keeps whatever needs an answer from you, whatever the"
+         echo "proportion works out to."
+         echo
+         echo "briefing needs a rule in your CLAUDE.md asking for a \"## Briefing\""
+         echo "section at the end of every message; without one it reads the whole"
+         echo "message, exactly like full."
+         echo "Currently: $(get DEPTH)" ;;
+    esac ;;
+
+  engine)
+    case "$2" in
+      say|openai|command) set_key TTS_ENGINE "$2"; echo "Voice engine: $2" ;;
+      *) echo "Usage: voice engine say|openai|command"; echo "Currently: $(get TTS_ENGINE)" ;;
+    esac ;;
+
+  tts)
+    # Audition the neural voice on a REAL briefing, so the delivery is judged
+    # on the thing you actually hear rather than a demo sentence.
+    KEYF="$HOME/.claude/openai-key"
+    KEY="${OPENAI_API_KEY:-$( [ -r "$KEYF" ] && tr -d "[:space:]" < "$KEYF" )}"
+    if [ -z "$KEY" ]; then
+      echo "No OpenAI key yet. Create one at https://platform.openai.com/api-keys then:"
+      echo "  printf '%s' 'sk-...' > ~/.claude/openai-key && chmod 600 ~/.claude/openai-key"
+      exit 1
+    fi
+    V="${2:-$(get TTS_OPENAI_VOICE)}"; V="${V:-sage}"
+    TXT=$(tail -1 "$HOME/.claude/menubar/briefings.tsv" 2>/dev/null | cut -f3)
+    [ -z "$TXT" ] && TXT="Done, I fixed the orbit spacing on mobile so the rings stop overlapping, and cached the showcase images. Want me to push it?"
+    STYLE="${3:-$(get TTS_OPENAI_STYLE)}"
+    OUT=$(mktemp).mp3
+    echo "voice: $V"
+    echo "text:  ${TXT:0:90}..."
+    curl -sS --max-time 25 https://api.openai.com/v1/audio/speech \
+      -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+      -d "$(jq -n --arg m "gpt-4o-mini-tts" --arg v "$V" --arg i "$TXT" --arg s "$STYLE" \
+            '{model:$m, voice:$v, input:$i, instructions:$s, response_format:"mp3"}')" \
+      -o "$OUT"
+    if head -c 1 "$OUT" | grep -q "{"; then
+      echo "error from OpenAI:"; head -c 300 "$OUT"; echo
+    else
+      afplay "$OUT"; echo "(played $(ls -l "$OUT" | awk "{print \$5}") bytes)"
+    fi
+    rm -f "$OUT" ;;
+
+  speak)
+    # Say arbitrary text through whichever engine is configured. Replay in the
+    # menu bar used to call `say` directly, which meant a replayed briefing came
+    # back in an Apple voice even when everything else was speaking as Sage.
+    TXT="$2"
+    [ -z "$TXT" ] && { echo "usage: voice speak \"some text\""; exit 1; }
+    # Take the voice from whatever holds it, by pid. A blanket `killall afplay`
+    # also silenced chimes, and it made a live briefing think it had finished
+    # and move on to its reply window.
+    VOICE_PID="$HOME/.claude/menubar/voice.pid"
+    OTHER=$(cat "$VOICE_PID" 2>/dev/null)
+    [ -n "$OTHER" ] && kill -0 "$OTHER" 2>/dev/null && kill "$OTHER" 2>/dev/null
+    : > "$VOICE_PID" 2>/dev/null
+    play_owned() {   # $1 file: play it, registered, so a briefing can take over
+      # The player warms the output route itself, so there is no separate
+      # lead-in to play here. Claim the voice before starting it.
+      printf '%s' "$$" > "$VOICE_PID" 2>/dev/null
+
+      # Listen for "stop" during a replay, exactly as a live briefing does.
+      # Replays had no barge-in at all: no listener, so no microphone indicator
+      # and nothing for a spoken stop to reach. A briefing playing is a briefing
+      # playing, and it should be interruptible whichever started it.
+      LA="$HOME/Applications/Overvoice Listen.app"
+      BF=""
+      if [ -x "$LA/Contents/MacOS/OvervoiceListen" ]; then
+        BF=$(mktemp)
+        pkill -f OvervoiceListen 2>/dev/null
+        # As long as the clip lasts, not a fixed window: briefings run past two
+        # minutes, so a flat 75 closed the microphone partway through.
+        W=$(afinfo "$1" 2>/dev/null | awk '/estimated duration/{printf "%d", $3 + 8}')
+        case "$W" in ''|*[!0-9]*) W=75 ;; esac
+        open -n -g -a "$LA" --args "$W" "$BF" bargein \
+          "$(get BARGE_WORDS)" "$(get BARGE_LEVEL)" 2>/dev/null
+      fi
+
+      PLAYER="$HOME/.claude/menubar/overvoice-play"
+      # Fade first, then files. This passed them the other way round after the
+      # player learned to take a list, so the clip was read as the fade duration
+      # and "0.35" was read as a filename: nothing played, and the microphone
+      # stayed open for the full 60s the player spends waiting for a file.
+      G=$(get PLAY_GAIN); G="${G:-4.0}"
+      if [ -x "$PLAYER" ]; then OVERVOICE_GAIN="$G" "$PLAYER" 0.35 "$1" &
+      else afplay -v "$G" "$1" & fi
+      AP=$!
+      printf '%s' "$AP" > "$VOICE_PID" 2>/dev/null
+      while kill -0 "$AP" 2>/dev/null; do
+        if [ -n "$BF" ] && [ "$(tr -d '[:space:]' < "$BF" 2>/dev/null)" = "stop" ]; then
+          # Signal only: the player fades itself out. A killall here would cut
+          # the fade off, and a confirmation tone would say nothing that the
+          # briefing going quiet has not already said.
+          kill "$AP" 2>/dev/null
+          break
+        fi
+        sleep 0.2
+      done
+      wait "$AP" 2>/dev/null
+      pkill -f OvervoiceListen 2>/dev/null
+      [ -n "$BF" ] && rm -f "$BF"
+      [ "$(cat "$VOICE_PID" 2>/dev/null)" = "$AP" ] && : > "$VOICE_PID" 2>/dev/null
+    }
+    ENG=$(get TTS_ENGINE); ENG="${ENG:-say}"
+    spoke=0
+    # The briefing was already rendered once when it was first spoken. Replaying
+    # it should not wait on another round trip for audio already paid for: this
+    # is the difference between replay starting instantly and after a pause.
+    CLIP_CACHE="$HOME/.claude/menubar/clips"
+    CK=$(printf '%s|%s|%s|%s' "$ENG" "$(get TTS_OPENAI_VOICE)" "$(get VOICE)" "$TXT" | md5 -q 2>/dev/null)
+    if [ -n "$CK" ] && [ -s "$CLIP_CACHE/$CK" ]; then
+      play_owned "$CLIP_CACHE/$CK"; exit 0
+    fi
+    if [ "$ENG" = "openai" ]; then
+      KEYF=$(get TTS_KEY_FILE); KEYF="${KEYF:-$HOME/.claude/openai-key}"
+      KEYF="${KEYF/#\$HOME/$HOME}"
+      KEY="${OPENAI_API_KEY:-$( [ -r "$KEYF" ] && tr -d "[:space:]" < "$KEYF" )}"
+      if [ -n "$KEY" ]; then
+        V=$(get TTS_OPENAI_VOICE); V="${V:-sage}"
+        M=$(get TTS_OPENAI_MODEL); M="${M:-gpt-4o-mini-tts}"
+        S=$(get TTS_OPENAI_STYLE)
+        OUT=$(mktemp).mp3
+        curl -sS --max-time 25 https://api.openai.com/v1/audio/speech \
+          -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+          -d "$(jq -n --arg m "$M" --arg v "$V" --arg i "$TXT" --arg s "$S" \
+                '{model:$m, voice:$v, input:$i, instructions:$s, response_format:"mp3"}')" \
+          -o "$OUT" 2>/dev/null
+        # An error comes back as JSON, not audio. Fall through to `say` rather
+        # than sitting there silently, which is how a broken key would look.
+        if [ -s "$OUT" ] && ! head -c 1 "$OUT" | grep -q "{"; then
+          if [ -n "$CK" ]; then
+            mkdir -p "$CLIP_CACHE" 2>/dev/null
+            cp "$OUT" "$CLIP_CACHE/$CK" 2>/dev/null   # next replay is instant
+          fi
+          play_owned "$OUT"; spoke=1
+        fi
+        rm -f "$OUT"
+      fi
+    fi
+    if [ "$spoke" != "1" ]; then
+      V=$(get VOICE); R=$(get RATE)
+      say ${V:+-v "$V"} ${R:+-r "$R"} "$TXT"
+    fi ;;
+
+  bargein)
+    # Calibrate BARGE_LEVEL: speak a stop word and see how loud it registered.
+    # Needs an Overvoice Listen built with barge-in support.
+    L="$HOME/Applications/Overvoice Listen.app"
+    V=$(mktemp); pkill -f OvervoiceListen 2>/dev/null
+    : > "$HOME/.claude/menubar/listen.log"
+    echo "Say \"stop\" a few times, at the volume you would really use. 12s."
+    # Test at the SAME threshold real briefings use, not a stale default. A
+    # calibration run at 0.12 nearly rejected a stop that the real 0.018 would
+    # have accepted sevenfold, which reads as "barely works" when it works fine.
+    open -n -g -a "$L" --args 12 "$V" bargein "$(get BARGE_WORDS)" "${2:-$(get BARGE_LEVEL)}"
+    for i in $(seq 1 40); do [ -s "$V" ] && break; sleep 0.5; done
+    echo "  verdict: $(cat "$V" 2>/dev/null || echo none)"
+    echo "  --- levels seen (set BARGE_LEVEL just below your own) ---"
+    grep "barge" "$HOME/.claude/menubar/listen.log" 2>/dev/null | sed 's/^/  /' || echo "  (nothing matched)"
+    rm -f "$V" ;;
+
+  miccheck)
+    # Can our listener hear anything while Wispr Flow holds the microphone?
+    # Everything about hands-free Wispr depends on the answer.
+    L="$HOME/Applications/Overvoice Listen.app"
+    V=$(mktemp); pkill -f OvervoiceListen 2>/dev/null
+    : > "$HOME/.claude/menubar/listen.log"
+    echo "Listening for 20 seconds."
+    echo "NOW: double-tap Globe to start Wispr, and talk for a few seconds."
+    open -n -g -a "$L" --args 20 "$V" transcribe 99
+    for i in $(seq 1 140); do [ -s "$V" ] && break; sleep 0.5; done
+    echo
+    echo "--- what our listener picked up ---"
+    grep -E 'listening|verdict' "$HOME/.claude/menubar/listen.log" | sed 's/^/  /'
+    echo
+    echo "peak near 0.15 = mic sharing WORKS, the plan is viable"
+    echo "peak near 0.00 = Wispr has exclusive hold, need a different approach"
+    rm -f "$V" ;;
+
+  transcribe)
+    L="$HOME/Applications/Overvoice Listen.app"
+    V=$(mktemp); pkill -f OvervoiceListen 2>/dev/null
+    : > "$HOME/.claude/menubar/listen.log"
+    echo "Speak a full sentence AFTER the chime — listening up to 9 seconds."
+    # Mic first, chime second. The other way round meant speaking into a mic
+    # that had not finished waking up, so the first words were lost.
+    open -n -g -a "$L" --args 12 "$V" transcribe 2.5
+    sleep 1.0
+    afplay -v "$(get CHIME_VOL)" "/System/Library/Sounds/Pop.aiff" 2>/dev/null
+    for i in $(seq 1 40); do [ -s "$V" ] && break; sleep 0.5; done
+    echo "TRANSCRIPT: '$(cat "$V" 2>/dev/null)'"
+    echo "--- log ---"; sed 's/^/  /' "$HOME/.claude/menubar/listen.log" 2>/dev/null
+    rm -f "$V" ;;
+
+  audition)
+    # Speak the same line in each good voice, so they can be compared directly.
+    # Voice names contain spaces and brackets, so take everything up to the
+    # locale column rather than splitting on whitespace.
+    NAMES=$(say -v '?' | grep -iE 'premium|enhanced' \
+      | sed -E 's/^(.*[^ ]) +[a-z]{2}_[A-Z]{2} +#.*/\1/')
+    if [ -z "$NAMES" ]; then
+      echo "No Premium or Enhanced voices installed yet. Run:  voice voices"
+      exit 1
+    fi
+    echo "$NAMES" | while IFS= read -r v; do
+      [ -z "$v" ] && continue
+      echo "  → $v"
+      say -v "$v" -r "$(get RATE)" \
+        "This is $v. Done — I tidied up the orbit spacing and cached the showcase images."
+      sleep 0.3
+    done
+    echo
+    echo "Pick one with:  voice set \"<name>\"" ;;
+
+  test)
+    # Through the real speaking path, not `say` directly. It used to call `say`
+    # with the Apple voice whatever the engine was set to, so testing a neural
+    # voice played a different one and told you nothing about the thing you had
+    # just chosen.
+    afplay -v "$(get CHIME_VOL)" "/System/Library/Sounds/$(get CHIME).aiff" 2>/dev/null
+    "$0" speak "Done, I tidied up the orbit spacing and cached the showcase images. Want me to push it?" ;;
+
+  voices)
+    echo "Opening Spoken Content settings."
+    echo "Click 'System Voice' then 'Manage Voices…', open English,"
+    echo "and download any voice marked Premium. Then run:  voice list"
+    open "x-apple.systempreferences:com.apple.preference.universalaccess?SpeakableItems" 2>/dev/null \
+      || open "x-apple.systempreferences:com.apple.preference.universalaccess" ;;
+
+  ""|status)
+    if [ -f "$OFF" ]; then echo "Status:  OFF"; else echo "Status:  ON"; fi
+    echo "Voice:   $(get VOICE)"
+    echo "Rate:    $(get RATE) wpm"
+    echo "Chime:   $(get CHIME)"
+    echo "Detail:  $(get DEPTH)"
+    echo
+    echo "voice off | on | chime | full | list | listen | transcribe | miccheck | bargein | engine <e> | tts [voice] | detail <level> | audition | set <name> | rate <n> | sound <n> | test | voices" ;;
+
+  *)
+    echo "Unknown: $1"
+    echo "voice off | on | chime | full | list | listen | transcribe | miccheck | bargein | engine <e> | tts [voice] | detail <level> | audition | set <name> | rate <n> | sound <n> | test | voices"
+    exit 1 ;;
+esac
